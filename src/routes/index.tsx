@@ -1,374 +1,335 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Settings } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { Trophy, History, Trash2, ChevronRight, Info } from 'lucide-react'
 import {
-  SettingsDialog,
-  ChatMessage,
-  LoadingIndicator,
-  ChatInput,
-  Sidebar,
+  SentenceDiagram,
+  SentenceInput,
+  FeedbackPanel,
+  WritingChallenges,
+  AchievementBadges,
   WelcomeScreen,
-  TopBanner
 } from '../components'
-import { useConversations, useAppState, store, actions } from '../store'
-import { genAIResponse, type Message } from '../utils'
+import { useAppState } from '../store'
+import { parseSentence } from '../utils'
+import type { DiagramResult, Achievement } from '../store'
 
 function Home() {
   const {
-    conversations,
-    currentConversationId,
-    currentConversation,
-    setCurrentConversationId,
-    createNewConversation,
-    updateConversationTitle,
-    deleteConversation,
-    addMessage,
-  } = useConversations()
-  
-  const { isLoading, setLoading, getActivePrompt } = useAppState()
+    isLoading,
+    diagrams,
+    currentDiagram,
+    achievements,
+    streak,
+    totalDiagrammed,
+    animationPhase,
+    currentChallenge,
+    showChallenges,
+    showHistory,
+    addDiagram,
+    setCurrentDiagram,
+    setLoading,
+    setAnimationPhase,
+    setCurrentChallenge,
+    toggleChallenges,
+    toggleHistory,
+    clearHistory,
+  } = useAppState()
 
-  // Memoize messages to prevent unnecessary re-renders
-  const messages = useMemo(() => currentConversation?.messages || [], [currentConversation]);
+  const [error, setError] = useState<string | null>(null)
+  const [newAchievement, setNewAchievement] = useState<Achievement | null>(null)
+  const [showSidebar, setShowSidebar] = useState(false)
+  const diagramRef = useRef<HTMLDivElement>(null)
 
-  // Local state
-  const [input, setInput] = useState('')
-  const [editingChatId, setEditingChatId] = useState<string | null>(null)
-  const [editingTitle, setEditingTitle] = useState('')
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
-  const [pendingMessage, setPendingMessage] = useState<Message | null>(null)
-  const [error, setError] = useState<string | null>(null);
-
-  const scrollToBottom = useCallback((smooth: boolean = false) => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTo({
-        top: messagesContainerRef.current.scrollHeight,
-        behavior: smooth ? 'smooth' : 'auto'
-      })
-    }
-  }, []);
-
-  // Scroll to bottom when messages change or loading state changes
+  // Track achievements for toast notifications
+  const prevAchievementsRef = useRef(achievements.filter(a => a.unlockedAt).length)
   useEffect(() => {
-    scrollToBottom(false)
-  }, [messages, scrollToBottom])
-
-  // Smooth scroll during streaming
-  useEffect(() => {
-    if (pendingMessage && isLoading) {
-      scrollToBottom(true)
+    const currentUnlocked = achievements.filter(a => a.unlockedAt)
+    if (currentUnlocked.length > prevAchievementsRef.current) {
+      const newest = currentUnlocked.sort((a, b) => (b.unlockedAt || 0) - (a.unlockedAt || 0))[0]
+      setNewAchievement(newest)
+      setTimeout(() => setNewAchievement(null), 5000)
     }
-  }, [pendingMessage, isLoading, scrollToBottom])
+    prevAchievementsRef.current = currentUnlocked.length
+  }, [achievements])
 
-  const createTitleFromInput = useCallback((text: string) => {
-    const words = text.trim().split(/\s+/)
-    const firstThreeWords = words.slice(0, 3).join(' ')
-    return firstThreeWords + (words.length > 3 ? '...' : '')
-  }, []);
+  const handleSubmit = useCallback(async (sentence: string) => {
+    if (!sentence.trim() || isLoading) return
 
-  // Helper function to process AI response
-  const processAIResponse = useCallback(async (conversationId: string, userMessage: Message) => {
-    try {
-      // Get active prompt
-      const activePrompt = getActivePrompt(store.state)
-      let systemPrompt
-      if (activePrompt) {
-        systemPrompt = {
-          value: activePrompt.content,
-          enabled: true,
-        }
-      }
-
-      // Get AI response
-      const response = await genAIResponse({
-        data: {
-          messages: [...messages, userMessage],
-          systemPrompt,
-        },
-      })
-
-      const reader = response.body?.getReader()
-      if (!reader) {
-        throw new Error('No reader found in response')
-      }
-
-      const decoder = new TextDecoder()
-
-      let done = false
-      let newMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: '',
-      }
-      let buffer = '' // Buffer to accumulate partial JSON chunks
-      let pendingTextQueue: string[] = [] // Queue of text chunks to render
-      let isRendering = false
-
-      // Smooth character-by-character rendering with adaptive speed
-      const renderTextSmoothly = async () => {
-        if (isRendering) return
-        isRendering = true
-
-        while (pendingTextQueue.length > 0) {
-          const chunk = pendingTextQueue.shift()!
-
-          // Adaptive rendering: faster for code blocks, smoother for regular text
-          const isCodeBlock = newMessage.content.includes('```') &&
-                             newMessage.content.split('```').length % 2 === 0
-
-          // Characters per frame and delay based on content type
-          const charsPerFrame = isCodeBlock ? 5 : 2 // Faster for code
-          const delay = isCodeBlock ? 2 : 5 // Shorter delay for code
-
-          for (let i = 0; i < chunk.length; i += charsPerFrame) {
-            const slice = chunk.slice(i, i + charsPerFrame)
-            newMessage = {
-              ...newMessage,
-              content: newMessage.content + slice,
-            }
-            setPendingMessage({ ...newMessage })
-
-            // Dynamic delay for natural typing rhythm
-            // ~200-400 chars per second for text, ~500 chars per second for code
-            await new Promise(resolve => setTimeout(resolve, delay))
-          }
-        }
-
-        isRendering = false
-      }
-
-      const scheduleUIUpdate = (text: string) => {
-        pendingTextQueue.push(text)
-        renderTextSmoothly()
-      }
-
-      while (!done) {
-        const out = await reader.read()
-        done = out.done
-        if (!done && out.value) {
-          // Decode the chunk and add to buffer
-          buffer += decoder.decode(out.value, { stream: true })
-
-          // Split by newlines to get complete JSON objects
-          const lines = buffer.split('\n')
-
-          // Keep the last incomplete line in the buffer
-          buffer = lines.pop() || ''
-
-          // Process each complete line
-          for (const line of lines) {
-            if (line.trim()) {
-              try {
-                const json = JSON.parse(line)
-                if (json.type === 'content_block_delta' && json.delta?.text) {
-                  scheduleUIUpdate(json.delta.text)
-                }
-              } catch (e) {
-                console.error('Error parsing streaming response:', e, 'Line:', line)
-              }
-            }
-          }
-        }
-      }
-
-      // Wait for any remaining text to finish rendering
-      while (pendingTextQueue.length > 0 || isRendering) {
-        await new Promise(resolve => setTimeout(resolve, 50))
-      }
-
-      setPendingMessage(null)
-      if (newMessage.content.trim()) {
-        // Add AI message to Convex
-        console.log('Adding AI response to conversation:', conversationId)
-        await addMessage(conversationId, newMessage)
-      }
-    } catch (error) {
-      console.error('Error in AI response:', error)
-      // Add an error message to the conversation
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: 'Sorry, I encountered an error generating a response. Please set the required API keys in your environment variables.',
-      }
-      await addMessage(conversationId, errorMessage)
-    }
-  }, [messages, getActivePrompt, addMessage]);
-
-  const handleSubmit = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || isLoading) return
-
-    const currentInput = input
-    setInput('') // Clear input early for better UX
-    setLoading(true)
     setError(null)
-    
-    const conversationTitle = createTitleFromInput(currentInput)
+    setLoading(true)
+    setAnimationPhase('parsing')
 
     try {
-      // Create the user message object
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user' as const,
-        content: currentInput.trim(),
-      }
-      
-      let conversationId = currentConversationId
+      const response = await parseSentence({ data: { sentence: sentence.trim() } })
+      const result: DiagramResult = await response.json()
 
-      // If no current conversation, create one in Convex first
-      if (!conversationId) {
-        try {
-          console.log('Creating new Convex conversation with title:', conversationTitle)
-          // Create a new conversation with our title
-          const convexId = await createNewConversation(conversationTitle)
-          
-          if (convexId) {
-            console.log('Successfully created Convex conversation with ID:', convexId)
-            conversationId = convexId
-            
-            // Add user message directly to Convex
-            console.log('Adding user message to Convex conversation:', userMessage.content)
-            await addMessage(conversationId, userMessage)
-          } else {
-            console.warn('Failed to create Convex conversation, falling back to local')
-            // Fallback to local storage if Convex creation failed
-            const tempId = Date.now().toString()
-            const tempConversation = {
-              id: tempId,
-              title: conversationTitle,
-              messages: [],
-            }
-            
-            actions.addConversation(tempConversation)
-            conversationId = tempId
-            
-            // Add user message to local state
-            actions.addMessage(conversationId, userMessage)
-          }
-        } catch (error) {
-          console.error('Error creating conversation:', error)
-          throw new Error('Failed to create conversation')
-        }
-      } else {
-        // We already have a conversation ID, add message directly to Convex
-        console.log('Adding user message to existing conversation:', conversationId)
-        await addMessage(conversationId, userMessage)
+      if ('error' in result && !result.parse) {
+        throw new Error((result as unknown as { error: string }).error)
       }
-      
-      // Process with AI after message is stored
-      await processAIResponse(conversationId, userMessage)
-      
-    } catch (error) {
-      console.error('Error:', error)
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: 'Sorry, I encountered an error processing your request.',
-      }
-      if (currentConversationId) {
-        await addMessage(currentConversationId, errorMessage)
-      }
-      else {
-        if (error instanceof Error) {
-          setError(error.message)
-        } else {
-          setError('An unknown error occurred.')
-        }
-      }
+
+      setAnimationPhase('building')
+      // Small delay to let the parsing animation finish
+      await new Promise(resolve => setTimeout(resolve, 300))
+
+      addDiagram(result)
+
+      // Scroll to diagram
+      setTimeout(() => {
+        diagramRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 200)
+
+      setTimeout(() => setAnimationPhase('complete'), 1800)
+    } catch (err) {
+      console.error('Error parsing sentence:', err)
+      setError(err instanceof Error ? err.message : 'Failed to parse sentence. Please try again.')
+      setAnimationPhase('idle')
     } finally {
       setLoading(false)
     }
-  }, [input, isLoading, createTitleFromInput, currentConversationId, createNewConversation, addMessage, processAIResponse, setLoading]);
+  }, [isLoading, setLoading, setAnimationPhase, addDiagram])
 
-  const handleNewChat = useCallback(() => {
-    createNewConversation()
-  }, [createNewConversation]);
+  const handleTryExample = useCallback((sentence: string) => {
+    handleSubmit(sentence)
+  }, [handleSubmit])
 
-  const handleDeleteChat = useCallback(async (id: string) => {
-    await deleteConversation(id)
-  }, [deleteConversation]);
-
-  const handleUpdateChatTitle = useCallback(async (id: string, title: string) => {
-    await updateConversationTitle(id, title)
-    setEditingChatId(null)
-    setEditingTitle('')
-  }, [updateConversationTitle]);
+  const sentenceHistory = diagrams.map(d => d.sentence)
 
   return (
-    <div className="relative flex h-screen bg-gray-900">
-      {/* Settings Button */}
-      <div className="absolute z-50 top-5 right-5">
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className="flex items-center justify-center w-10 h-10 text-white transition-opacity rounded-full bg-gradient-to-r from-orange-500 to-red-600 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-orange-500"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
+    <div className="relative flex h-screen bg-slate-950">
+      {/* Sidebar */}
+      <div
+        className={`fixed md:relative z-40 h-full w-72 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800/50 transition-transform duration-300 flex flex-col ${
+          showSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        }`}
+      >
+        {/* Sidebar header with stats */}
+        <div className="p-4 border-b border-slate-800/50">
+          <h2 className="text-sm font-semibold text-white mb-3">Your Progress</h2>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="p-2.5 rounded-lg bg-slate-800/50 text-center">
+              <p className="text-lg font-bold text-indigo-400">{totalDiagrammed}</p>
+              <p className="text-[10px] text-slate-500">Diagrammed</p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-800/50 text-center">
+              <p className="text-lg font-bold text-amber-400">{streak}</p>
+              <p className="text-[10px] text-slate-500">Streak</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Achievements */}
+        <div className="p-4 border-b border-slate-800/50 overflow-y-auto flex-shrink-0" style={{ maxHeight: '280px' }}>
+          <AchievementBadges achievements={achievements} newlyUnlocked={newAchievement} />
+        </div>
+
+        {/* Actions */}
+        <div className="p-3 space-y-1.5 flex-shrink-0">
+          <button
+            onClick={toggleChallenges}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-slate-300 hover:bg-slate-800/50 hover:text-white transition-colors"
+          >
+            <Trophy className="w-4 h-4 text-amber-400" />
+            <span>Writing Challenges</span>
+            <ChevronRight className="w-3 h-3 ml-auto text-slate-600" />
+          </button>
+          <button
+            onClick={toggleHistory}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-slate-300 hover:bg-slate-800/50 hover:text-white transition-colors"
+          >
+            <History className="w-4 h-4 text-sky-400" />
+            <span>Diagram History</span>
+            <ChevronRight className="w-3 h-3 ml-auto text-slate-600" />
+          </button>
+        </div>
+
+        {/* History list */}
+        {showHistory && diagrams.length > 0 && (
+          <div className="flex-1 overflow-y-auto border-t border-slate-800/50">
+            <div className="p-3 space-y-1">
+              <div className="flex items-center justify-between px-2 mb-2">
+                <span className="text-xs text-slate-500 font-medium">History</span>
+                <button
+                  onClick={clearHistory}
+                  className="text-xs text-slate-600 hover:text-red-400 transition-colors flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Clear
+                </button>
+              </div>
+              {diagrams.slice(0, 20).map((d) => (
+                <button
+                  key={d.id}
+                  onClick={() => setCurrentDiagram(d.id)}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors truncate ${
+                    currentDiagram?.id === d.id
+                      ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/20'
+                      : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                >
+                  {d.sentence}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Sidebar */}
-      <Sidebar 
-        conversations={conversations}
-        currentConversationId={currentConversationId}
-        handleNewChat={handleNewChat}
-        setCurrentConversationId={setCurrentConversationId}
-        handleDeleteChat={handleDeleteChat}
-        editingChatId={editingChatId}
-        setEditingChatId={setEditingChatId}
-        editingTitle={editingTitle}
-        setEditingTitle={setEditingTitle}
-        handleUpdateChatTitle={handleUpdateChatTitle}
-      />
+      {/* Mobile sidebar toggle */}
+      <button
+        onClick={() => setShowSidebar(!showSidebar)}
+        className="fixed bottom-4 left-4 z-50 md:hidden p-3 rounded-full bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
+      >
+        <Info className="w-5 h-5" />
+      </button>
 
-      {/* Main Content */}
-      <div className="flex flex-col flex-1">
-        <TopBanner />
-        {error && (
-          <p className="w-full max-w-3xl p-4 mx-auto font-bold text-orange-500">{error}</p>
-        )}
-        {currentConversationId ? (
-          <>
-            {/* Messages */}
-            <div
-              ref={messagesContainerRef}
-              className="flex-1 pb-24 overflow-y-auto messages-container"
-            >
-              <div className="w-full max-w-3xl px-4 mx-auto">
-                {[...messages, pendingMessage]
-                  .filter((message): message is Message => message !== null)
-                  .map((message) => (
-                    <ChatMessage
-                      key={message.id}
-                      message={message}
-                      isStreaming={message === pendingMessage && isLoading}
-                    />
-                  ))}
-                {isLoading && <LoadingIndicator />}
+      {/* Backdrop for mobile sidebar */}
+      {showSidebar && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={() => setShowSidebar(false)}
+        />
+      )}
+
+      {/* Main content */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar */}
+        <header className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-bold">
+              <span className="text-transparent bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text">
+                Sentence
+              </span>{' '}
+              <span className="text-white">Architect</span>
+            </h1>
+          </div>
+
+          {/* Current challenge badge */}
+          {currentChallenge && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-xs text-amber-300">
+                Challenge: {currentChallenge.title}
+              </span>
+              <button
+                onClick={() => setCurrentChallenge(null)}
+                className="text-amber-500/50 hover:text-amber-400 ml-1"
+              >
+                &times;
+              </button>
+            </div>
+          )}
+        </header>
+
+        {/* Scrollable content area */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Challenge hint */}
+          {currentChallenge && !currentChallenge.completed && (
+            <div className="max-w-3xl mx-auto px-4 mt-4">
+              <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/15">
+                <p className="text-xs text-amber-400 font-medium mb-1">{currentChallenge.title}</p>
+                <p className="text-sm text-slate-300 mb-2">{currentChallenge.description}</p>
+                <p className="text-xs text-slate-500">
+                  Hint: {currentChallenge.hint}
+                </p>
+                <p className="text-xs text-slate-600 mt-2 italic">
+                  Example: "{currentChallenge.exampleSentence}"
+                </p>
               </div>
             </div>
+          )}
 
-            {/* Input */}
-            <ChatInput 
-              input={input}
-              setInput={setInput}
-              handleSubmit={handleSubmit}
-              isLoading={isLoading}
-            />
-          </>
-        ) : (
-          <WelcomeScreen 
-            input={input}
-            setInput={setInput}
-            handleSubmit={handleSubmit}
+          {/* Error */}
+          {error && (
+            <div className="max-w-3xl mx-auto px-4 mt-4">
+              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-300">
+                {error}
+              </div>
+            </div>
+          )}
+
+          {/* Main content area */}
+          {currentDiagram ? (
+            <div ref={diagramRef} className="py-6 space-y-6">
+              {/* Original sentence display */}
+              <div className="max-w-3xl mx-auto px-4">
+                <div className="text-center">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Your Sentence</p>
+                  <p className="text-xl text-white font-light leading-relaxed">
+                    "{currentDiagram.sentence}"
+                  </p>
+                </div>
+              </div>
+
+              {/* Diagram */}
+              <div className="max-w-4xl mx-auto px-4">
+                <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-800/30">
+                  <SentenceDiagram
+                    parse={currentDiagram.parse}
+                    animationPhase={animationPhase}
+                  />
+                </div>
+              </div>
+
+              {/* Word breakdown */}
+              {currentDiagram.parse.words && currentDiagram.parse.words.length > 0 && (
+                <div className="max-w-3xl mx-auto px-4">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-3 text-center">
+                    Word Breakdown
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {currentDiagram.parse.words.map((word, i) => (
+                      <div
+                        key={i}
+                        className="flex flex-col items-center px-3 py-2 rounded-lg bg-slate-800/40 border border-slate-700/30"
+                        style={{
+                          opacity: animationPhase === 'complete' ? 1 : 0,
+                          transition: `opacity 0.3s ease ${i * 0.05}s`,
+                        }}
+                      >
+                        <span className="text-sm font-medium" style={{ color: word.color }}>
+                          {word.word}
+                        </span>
+                        <span className="text-[10px] text-slate-500 mt-0.5">
+                          {word.partOfSpeech}
+                        </span>
+                        <span className="text-[9px] text-slate-600">
+                          {word.role}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Feedback */}
+              <div className="px-4">
+                <FeedbackPanel diagram={currentDiagram} />
+              </div>
+            </div>
+          ) : (
+            <WelcomeScreen onTryExample={handleTryExample} />
+          )}
+        </div>
+
+        {/* Input area - always at bottom */}
+        <div className="flex-shrink-0 py-4 border-t border-slate-800/50 bg-slate-950/80 backdrop-blur-sm">
+          <SentenceInput
+            onSubmit={handleSubmit}
             isLoading={isLoading}
+            history={sentenceHistory}
           />
-        )}
+        </div>
       </div>
 
-      {/* Settings Dialog */}
-      <SettingsDialog
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+      {/* Writing challenges modal */}
+      <WritingChallenges
+        isOpen={showChallenges}
+        onClose={toggleChallenges}
+        onSelectChallenge={(challenge) => {
+          setCurrentChallenge(challenge)
+          toggleChallenges()
+        }}
+        currentChallenge={currentChallenge}
       />
     </div>
   )

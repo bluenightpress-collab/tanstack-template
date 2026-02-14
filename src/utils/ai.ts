@@ -1,66 +1,63 @@
 import { createServerFn } from '@tanstack/react-start'
 import { Anthropic } from '@anthropic-ai/sdk'
+import type { DiagramResult, SentenceParse } from '../store/store'
 
-export interface Message {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
+const SENTENCE_PARSE_SYSTEM_PROMPT = `You are a sentence diagramming expert and encouraging writing teacher. Your job is to analyze sentences and return structured JSON for rendering Reed-Kellogg style diagrams.
+
+You must ALWAYS respond with valid JSON matching this exact schema (no markdown, no code fences, just raw JSON):
+
+{
+  "parse": {
+    "sentence": "the original sentence",
+    "words": [
+      { "word": "the word", "partOfSpeech": "noun|verb|adjective|adverb|preposition|conjunction|pronoun|interjection|article|determiner", "role": "subject|predicate|directObject|indirectObject|subjectModifier|predicateModifier|objectModifier|prepositionalPhrase|conjunction|interjection", "modifies": "word it modifies or null", "color": "hex color for this part of speech" }
+    ],
+    "subject": "the subject word(s)",
+    "predicate": "the predicate/verb word(s)",
+    "directObject": "direct object or null",
+    "indirectObject": "indirect object or null",
+    "subjectModifiers": ["words modifying the subject"],
+    "predicateModifiers": ["words modifying the predicate"],
+    "objectModifiers": ["words modifying any object"],
+    "prepositionalPhrases": [
+      { "preposition": "prep word", "object": "object of prep", "modifiers": ["modifiers of prep object"] }
+    ],
+    "clauses": [
+      { "type": "independent|dependent|relative|adverbial", "content": "clause content" }
+    ],
+    "sentenceType": "declarative|interrogative|imperative|exclamatory",
+    "complexity": "simple|compound|complex|compound-complex"
+  },
+  "feedback": "A 1-2 sentence educational comment about the grammar structure used. Be specific about what makes this sentence interesting or how it could be improved.",
+  "encouragement": "A warm, specific encouraging message to the student. Reference something they did well. Be genuine, not generic.",
+  "syntaxIssues": ["List any grammar or syntax problems. Empty array if none."],
+  "improvementSuggestions": ["2-3 specific suggestions for making the sentence more engaging, vivid, or complex. Always suggest ways to make writing more exciting."],
+  "complexityScore": 5
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are TanStack Chat, an AI assistant using Markdown for clear and structured responses. Format your responses following these guidelines:
+Color scheme for parts of speech (use these exact colors):
+- noun: #60a5fa (blue)
+- pronoun: #818cf8 (indigo)
+- verb: #f87171 (red)
+- adjective: #34d399 (green)
+- adverb: #fbbf24 (yellow)
+- preposition: #a78bfa (purple)
+- conjunction: #fb923c (orange)
+- interjection: #f472b6 (pink)
+- article/determiner: #94a3b8 (gray)
 
-1. Use headers for sections:
-   # For main topics
-   ## For subtopics
-   ### For subsections
+Rules:
+1. Handle ANY input, even fragments or badly formed sentences. Identify issues in syntaxIssues.
+2. For fragments, still parse what you can and explain what's missing.
+3. complexityScore: 1-2 for fragments, 3-4 for simple, 5-6 for compound, 7-8 for complex, 9-10 for compound-complex with rich modifiers.
+4. Always be encouraging. Find something positive even in problematic sentences.
+5. Suggestions should push students toward more vivid, varied writing.
+6. If a sentence is a question, parse the underlying declarative structure.
+7. For imperative sentences, note the implied "you" subject.`
 
-2. For lists and steps:
-   - Use bullet points for unordered lists
-   - Number steps when sequence matters
-   
-3. For code:
-   - Use inline \`code\` for short snippets
-   - Use triple backticks with language for blocks:
-   \`\`\`python
-   def example():
-       return "like this"
-   \`\`\`
-
-4. For emphasis:
-   - Use **bold** for important points
-   - Use *italics* for emphasis
-   - Use > for important quotes or callouts
-
-5. For structured data:
-   | Use | Tables |
-   |-----|---------|
-   | When | Needed |
-
-6. Break up long responses with:
-   - Clear section headers
-   - Appropriate spacing between sections
-   - Bullet points for better readability
-   - Short, focused paragraphs
-
-7. For technical content:
-   - Always specify language for code blocks
-   - Use inline \`code\` for technical terms
-   - Include example usage where helpful
-
-Keep responses concise and well-structured. Use appropriate Markdown formatting to enhance readability and understanding.`
-
-// Non-streaming implementation
-export const genAIResponse = createServerFn({ method: 'GET', response: 'raw' })
-  .validator(
-    (d: {
-      messages: Array<Message>
-      systemPrompt?: { value: string; enabled: boolean }
-    }) => d,
-  )
-  // .middleware([loggingMiddleware])
+export const parseSentence = createServerFn({ method: 'POST', response: 'raw' })
+  .validator((d: { sentence: string }) => d)
   .handler(async ({ data }) => {
-    // Check for API key in environment variables
-    // This should ONLY use server-side environment variables (no VITE_ prefix)
     const apiKey = process.env.ANTHROPIC_API_KEY
 
     if (!apiKey) {
@@ -69,113 +66,81 @@ export const genAIResponse = createServerFn({ method: 'GET', response: 'raw' })
       )
     }
 
-    // Create Anthropic client with proper configuration
-    // Don't set baseURL - Netlify AI Gateway will intercept requests to api.anthropic.com automatically
     const anthropic = new Anthropic({
       apiKey,
-      // Add proper timeout to avoid connection issues
-      timeout: 30000 // 30 seconds timeout
-    })
-
-    // Filter out error messages and empty messages
-    const formattedMessages = data.messages
-      .filter(
-        (msg) =>
-          msg.content.trim() !== '' &&
-          !msg.content.startsWith('Sorry, I encountered an error'),
-      )
-      .map((msg) => ({
-        role: msg.role,
-        content: msg.content.trim(),
-      }))
-
-    if (formattedMessages.length === 0) {
-      return new Response(JSON.stringify({ error: 'No valid messages to send' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-
-    const systemPrompt = data.systemPrompt?.enabled
-      ? `${DEFAULT_SYSTEM_PROMPT}\n\n${data.systemPrompt.value}`
-      : DEFAULT_SYSTEM_PROMPT
-
-    // Debug log to verify prompt layering
-    console.log('System Prompt Configuration:', {
-      hasCustomPrompt: data.systemPrompt?.enabled,
-      customPromptValue: data.systemPrompt?.value,
-      finalPrompt: systemPrompt,
+      timeout: 30000,
     })
 
     try {
-      const stream = await anthropic.messages.stream({
+      const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: formattedMessages,
+        max_tokens: 2048,
+        system: SENTENCE_PARSE_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: `Parse this sentence and return the JSON diagram data: "${data.sentence}"`,
+          },
+        ],
       })
 
-      // Transform the Anthropic stream to match the expected client format
-      // The client reads chunks and expects each chunk to contain one complete JSON object
-      const encoder = new TextEncoder()
-      const transformedStream = new ReadableStream({
-        async start(controller) {
-          try {
-            for await (const event of stream) {
-              // Only send content_block_delta events with text
-              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-                const chunk = {
-                  type: 'content_block_delta',
-                  delta: {
-                    type: 'text_delta',
-                    text: event.delta.text,
-                  },
-                }
-                // Encode each JSON object as a separate chunk
-                // This ensures the decoder can parse each chunk independently
-                controller.enqueue(encoder.encode(JSON.stringify(chunk) + '\n'))
-              }
-            }
-            controller.close()
-          } catch (error) {
-            console.error('Stream error:', error)
-            controller.error(error)
-          }
-        },
-      })
+      const textContent = response.content.find(block => block.type === 'text')
+      if (!textContent || textContent.type !== 'text') {
+        throw new Error('No text response from AI')
+      }
 
-      return new Response(transformedStream, {
-        headers: {
-          'Content-Type': 'application/x-ndjson',
-        },
+      // Parse the JSON response
+      let parsed
+      try {
+        parsed = JSON.parse(textContent.text)
+      } catch {
+        // Try to extract JSON from the response if it has extra text
+        const jsonMatch = textContent.text.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0])
+        } else {
+          throw new Error('Failed to parse AI response as JSON')
+        }
+      }
+
+      const result: DiagramResult = {
+        id: Date.now().toString(),
+        sentence: data.sentence,
+        parse: parsed.parse as SentenceParse,
+        feedback: parsed.feedback,
+        encouragement: parsed.encouragement,
+        syntaxIssues: parsed.syntaxIssues || [],
+        improvementSuggestions: parsed.improvementSuggestions || [],
+        complexityScore: parsed.complexityScore || 3,
+        timestamp: Date.now(),
+      }
+
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
       })
     } catch (error) {
-      console.error('Error in genAIResponse:', error)
-      
-      // Error handling with specific messages
-      let errorMessage = 'Failed to get AI response'
+      console.error('Error in parseSentence:', error)
+
+      let errorMessage = 'Failed to parse sentence'
       let statusCode = 500
-      
+
       if (error instanceof Error) {
         if (error.message.includes('rate limit')) {
           errorMessage = 'Rate limit exceeded. Please try again in a moment.'
         } else if (error.message.includes('Connection error') || error.name === 'APIConnectionError') {
-          errorMessage = 'Connection to Anthropic API failed. Please check your internet connection and API key.'
-          statusCode = 503 // Service Unavailable
+          errorMessage = 'Connection to AI failed. Please check your internet connection.'
+          statusCode = 503
         } else if (error.message.includes('authentication')) {
-          errorMessage = 'Authentication failed. Please check your Anthropic API key.'
-          statusCode = 401 // Unauthorized
+          errorMessage = 'Authentication failed. Please check your API key.'
+          statusCode = 401
         } else {
           errorMessage = error.message
         }
       }
-      
-      return new Response(JSON.stringify({ 
-        error: errorMessage,
-        details: error instanceof Error ? error.name : undefined
-      }), {
+
+      return new Response(JSON.stringify({ error: errorMessage }), {
         status: statusCode,
         headers: { 'Content-Type': 'application/json' },
       })
     }
-  }) 
+  })
