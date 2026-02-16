@@ -60,8 +60,7 @@ function Home() {
     setAnimationPhase('parsing')
 
     try {
-      const response = await parseSentence({ data: { sentence: sentence.trim() } })
-      const result: DiagramResult = await response.json()
+      const result: DiagramResult = await parseSentence({ data: { sentence: sentence.trim() } }) as DiagramResult
 
       if ('error' in result && !result.parse) {
         throw new Error((result as unknown as { error: string }).error)

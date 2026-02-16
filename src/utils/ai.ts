@@ -55,7 +55,7 @@ Rules:
 6. If a sentence is a question, parse the underlying declarative structure.
 7. For imperative sentences, note the implied "you" subject.`
 
-export const parseSentence = createServerFn({ method: 'POST', response: 'raw' })
+export const parseSentence = createServerFn({ method: 'POST' })
   .validator((d: { sentence: string }) => d)
   .handler(async ({ data }) => {
     const apiKey = process.env.ANTHROPIC_API_KEY
@@ -115,32 +115,24 @@ export const parseSentence = createServerFn({ method: 'POST', response: 'raw' })
         timestamp: Date.now(),
       }
 
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      })
+      return result
     } catch (error) {
       console.error('Error in parseSentence:', error)
 
       let errorMessage = 'Failed to parse sentence'
-      let statusCode = 500
 
       if (error instanceof Error) {
         if (error.message.includes('rate limit')) {
           errorMessage = 'Rate limit exceeded. Please try again in a moment.'
         } else if (error.message.includes('Connection error') || error.name === 'APIConnectionError') {
           errorMessage = 'Connection to AI failed. Please check your internet connection.'
-          statusCode = 503
         } else if (error.message.includes('authentication')) {
           errorMessage = 'Authentication failed. Please check your API key.'
-          statusCode = 401
         } else {
           errorMessage = error.message
         }
       }
 
-      return new Response(JSON.stringify({ error: errorMessage }), {
-        status: statusCode,
-        headers: { 'Content-Type': 'application/json' },
-      })
+      return { error: errorMessage } as any
     }
   })
