@@ -11,9 +11,16 @@
 // Import Routes
 
 import { Route as rootRoute } from './routes/__root'
+import { Route as ScenarioImport } from './routes/scenario'
 import { Route as IndexImport } from './routes/index'
 
 // Create/Update Routes
+
+const ScenarioRoute = ScenarioImport.update({
+  id: '/scenario',
+  path: '/scenario',
+  getParentRoute: () => rootRoute,
+} as any)
 
 const IndexRoute = IndexImport.update({
   id: '/',
@@ -32,6 +39,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexImport
       parentRoute: typeof rootRoute
     }
+    '/scenario': {
+      id: '/scenario'
+      path: '/scenario'
+      fullPath: '/scenario'
+      preLoaderRoute: typeof ScenarioImport
+      parentRoute: typeof rootRoute
+    }
   }
 }
 
@@ -39,32 +53,37 @@ declare module '@tanstack/react-router' {
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/scenario': typeof ScenarioRoute
 }
 
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/scenario': typeof ScenarioRoute
 }
 
 export interface FileRoutesById {
   __root__: typeof rootRoute
   '/': typeof IndexRoute
+  '/scenario': typeof ScenarioRoute
 }
 
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/scenario'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/scenario'
+  id: '__root__' | '/' | '/scenario'
   fileRoutesById: FileRoutesById
 }
 
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ScenarioRoute: typeof ScenarioRoute
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ScenarioRoute: ScenarioRoute,
 }
 
 export const routeTree = rootRoute
@@ -77,11 +96,15 @@ export const routeTree = rootRoute
     "__root__": {
       "filePath": "__root.tsx",
       "children": [
-        "/"
+        "/",
+        "/scenario"
       ]
     },
     "/": {
       "filePath": "index.tsx"
+    },
+    "/scenario": {
+      "filePath": "scenario.tsx"
     }
   }
 }
