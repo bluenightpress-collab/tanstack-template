@@ -4,5 +4,6 @@ dist
 dist-ssr
 *.local
 .vinxi
+app.config.timestamp_*
 .netlify
 .env
