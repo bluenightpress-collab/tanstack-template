@@ -1,379 +1,231 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { Settings } from 'lucide-react'
-import {
-  SettingsDialog,
-  ChatMessage,
-  LoadingIndicator,
-  ChatInput,
-  Sidebar,
-  WelcomeScreen,
-  TopBanner
-} from '../components'
-import { useConversations, useAppState, store, actions } from '../store'
-import { genAIResponse, type Message } from '../utils'
+import { createFileRoute } from '@tanstack/react-router';
+import { useState, useCallback, useMemo } from 'react';
+import { categories, getAllIndicators } from '../components/scenario/data';
+import { IndicatorCard } from '../components/scenario/IndicatorCard';
+import { ScenarioHeader } from '../components/scenario/ScenarioHeader';
+import { ImpactNarrative } from '../components/scenario/ImpactNarrative';
 
-function Home() {
-  const {
-    conversations,
-    currentConversationId,
-    currentConversation,
-    setCurrentConversationId,
-    createNewConversation,
-    updateConversationTitle,
-    deleteConversation,
-    addMessage,
-  } = useConversations()
-  
-  const { isLoading, setLoading, getActivePrompt } = useAppState()
+// Preset scenarios
+const presets: Record<string, Record<string, number>> = {
+  current: Object.fromEntries(getAllIndicators().map((i) => [i.id, i.currentValue])),
 
-  // Memoize messages to prevent unnecessary re-renders
-  const messages = useMemo(() => currentConversation?.messages || [], [currentConversation]);
+  mild_recession: {
+    unemployment: 7.5,
+    lfpr: 79,
+    job_category_loss: 8,
+    gdp_change: -4,
+    productivity: 2.0,
+    sp500: -22,
+    cpi_inflation: 4.5,
+    profit_margin: 6,
+    market_concentration: 30,
+    prof_services: -8,
+    knowledge_workers: -6,
+    tech_wages: -8,
+    college_premium: 58,
+    gini: 0.51,
+    top1_income: 23,
+    top01_wealth: 18,
+    median_mean_income: -8,
+  },
 
-  // Local state
-  const [input, setInput] = useState('')
-  const [editingChatId, setEditingChatId] = useState<string | null>(null)
-  const [editingTitle, setEditingTitle] = useState('')
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
-  const [pendingMessage, setPendingMessage] = useState<Message | null>(null)
-  const [error, setError] = useState<string | null>(null);
+  ai_disruption: {
+    unemployment: 9,
+    lfpr: 76,
+    job_category_loss: 35,
+    gdp_change: 8,
+    productivity: 7,
+    sp500: 85,
+    cpi_inflation: 3.5,
+    profit_margin: 22,
+    market_concentration: 55,
+    prof_services: -22,
+    knowledge_workers: -32,
+    tech_wages: -28,
+    college_premium: 38,
+    gini: 0.56,
+    top1_income: 30,
+    top01_wealth: 26,
+    median_mean_income: -25,
+  },
 
-  const scrollToBottom = useCallback((smooth: boolean = false) => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTo({
-        top: messagesContainerRef.current.scrollHeight,
-        behavior: smooth ? 'smooth' : 'auto'
-      })
+  severe_crisis: {
+    unemployment: 22,
+    lfpr: 65,
+    job_category_loss: 55,
+    gdp_change: -35,
+    productivity: 10,
+    sp500: -65,
+    cpi_inflation: 20,
+    profit_margin: 1,
+    market_concentration: 70,
+    prof_services: -40,
+    knowledge_workers: -50,
+    tech_wages: -65,
+    college_premium: 25,
+    gini: 0.65,
+    top1_income: 40,
+    top01_wealth: 35,
+    median_mean_income: -45,
+  },
+};
+
+function ScenarioPage() {
+  // Initialize with current values
+  const [values, setValues] = useState<Record<string, number>>(() =>
+    Object.fromEntries(getAllIndicators().map((i) => [i.id, i.currentValue])),
+  );
+
+  const [expandedCategory, setExpandedCategory] = useState<string | null>('labor');
+
+  const handleChange = useCallback((id: string, value: number) => {
+    setValues((prev) => ({ ...prev, [id]: value }));
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setValues(Object.fromEntries(getAllIndicators().map((i) => [i.id, i.currentValue])));
+  }, []);
+
+  const handlePreset = useCallback((preset: string) => {
+    const p = presets[preset];
+    if (p) {
+      setValues({ ...p });
     }
   }, []);
 
-  // Scroll to bottom when messages change or loading state changes
-  useEffect(() => {
-    scrollToBottom(false)
-  }, [messages, scrollToBottom])
-
-  // Smooth scroll during streaming
-  useEffect(() => {
-    if (pendingMessage && isLoading) {
-      scrollToBottom(true)
-    }
-  }, [pendingMessage, isLoading, scrollToBottom])
-
-  const createTitleFromInput = useCallback((text: string) => {
-    const words = text.trim().split(/\s+/)
-    const firstThreeWords = words.slice(0, 3).join(' ')
-    return firstThreeWords + (words.length > 3 ? '...' : '')
+  const toggleCategory = useCallback((id: string) => {
+    setExpandedCategory((prev) => (prev === id ? null : id));
   }, []);
 
-  // Helper function to process AI response
-  const processAIResponse = useCallback(async (conversationId: string, userMessage: Message) => {
-    try {
-      // Get active prompt
-      const activePrompt = getActivePrompt(store.state)
-      let systemPrompt
-      if (activePrompt) {
-        systemPrompt = {
-          value: activePrompt.content,
-          enabled: true,
-        }
-      }
-
-      // Get AI response
-      const response = await genAIResponse({
-        data: {
-          messages: [...messages, userMessage],
-          systemPrompt,
-        },
-      })
-
-      const reader = response.body?.getReader()
-      if (!reader) {
-        throw new Error('No reader found in response')
-      }
-
-      const decoder = new TextDecoder()
-
-      let done = false
-      let newMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: '',
-      }
-      let buffer = '' // Buffer to accumulate partial JSON chunks
-      let pendingTextQueue: string[] = [] // Queue of text chunks to render
-      let isRendering = false
-
-      // Smooth character-by-character rendering with adaptive speed
-      const renderTextSmoothly = async () => {
-        if (isRendering) return
-        isRendering = true
-
-        while (pendingTextQueue.length > 0) {
-          const chunk = pendingTextQueue.shift()!
-
-          // Adaptive rendering: faster for code blocks, smoother for regular text
-          const isCodeBlock = newMessage.content.includes('```') &&
-                             newMessage.content.split('```').length % 2 === 0
-
-          // Characters per frame and delay based on content type
-          const charsPerFrame = isCodeBlock ? 5 : 2 // Faster for code
-          const delay = isCodeBlock ? 2 : 5 // Shorter delay for code
-
-          for (let i = 0; i < chunk.length; i += charsPerFrame) {
-            const slice = chunk.slice(i, i + charsPerFrame)
-            newMessage = {
-              ...newMessage,
-              content: newMessage.content + slice,
-            }
-            setPendingMessage({ ...newMessage })
-
-            // Dynamic delay for natural typing rhythm
-            // ~200-400 chars per second for text, ~500 chars per second for code
-            await new Promise(resolve => setTimeout(resolve, delay))
-          }
-        }
-
-        isRendering = false
-      }
-
-      const scheduleUIUpdate = (text: string) => {
-        pendingTextQueue.push(text)
-        renderTextSmoothly()
-      }
-
-      while (!done) {
-        const out = await reader.read()
-        done = out.done
-        if (!done && out.value) {
-          // Decode the chunk and add to buffer
-          buffer += decoder.decode(out.value, { stream: true })
-
-          // Split by newlines to get complete JSON objects
-          const lines = buffer.split('\n')
-
-          // Keep the last incomplete line in the buffer
-          buffer = lines.pop() || ''
-
-          // Process each complete line
-          for (const line of lines) {
-            if (line.trim()) {
-              try {
-                const json = JSON.parse(line)
-                if (json.type === 'content_block_delta' && json.delta?.text) {
-                  scheduleUIUpdate(json.delta.text)
-                }
-              } catch (e) {
-                console.error('Error parsing streaming response:', e, 'Line:', line)
-              }
-            }
-          }
-        }
-      }
-
-      // Wait for any remaining text to finish rendering
-      while (pendingTextQueue.length > 0 || isRendering) {
-        await new Promise(resolve => setTimeout(resolve, 50))
-      }
-
-      setPendingMessage(null)
-      if (newMessage.content.trim()) {
-        // Add AI message to Convex
-        console.log('Adding AI response to conversation:', conversationId)
-        await addMessage(conversationId, newMessage)
-      }
-    } catch (error) {
-      console.error('Error in AI response:', error)
-      // Add an error message to the conversation
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: 'Sorry, I encountered an error generating a response. Please set the required API keys in your environment variables.',
-      }
-      await addMessage(conversationId, errorMessage)
-    }
-  }, [messages, getActivePrompt, addMessage]);
-
-  const handleSubmit = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || isLoading) return
-
-    const currentInput = input
-    setInput('') // Clear input early for better UX
-    setLoading(true)
-    setError(null)
-    
-    const conversationTitle = createTitleFromInput(currentInput)
-
-    try {
-      // Create the user message object
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user' as const,
-        content: currentInput.trim(),
-      }
-      
-      let conversationId = currentConversationId
-
-      // If no current conversation, create one in Convex first
-      if (!conversationId) {
-        try {
-          console.log('Creating new Convex conversation with title:', conversationTitle)
-          // Create a new conversation with our title
-          const convexId = await createNewConversation(conversationTitle)
-          
-          if (convexId) {
-            console.log('Successfully created Convex conversation with ID:', convexId)
-            conversationId = convexId
-            
-            // Add user message directly to Convex
-            console.log('Adding user message to Convex conversation:', userMessage.content)
-            await addMessage(conversationId, userMessage)
-          } else {
-            console.warn('Failed to create Convex conversation, falling back to local')
-            // Fallback to local storage if Convex creation failed
-            const tempId = Date.now().toString()
-            const tempConversation = {
-              id: tempId,
-              title: conversationTitle,
-              messages: [],
-            }
-            
-            actions.addConversation(tempConversation)
-            conversationId = tempId
-            
-            // Add user message to local state
-            actions.addMessage(conversationId, userMessage)
-          }
-        } catch (error) {
-          console.error('Error creating conversation:', error)
-          throw new Error('Failed to create conversation')
-        }
-      } else {
-        // We already have a conversation ID, add message directly to Convex
-        console.log('Adding user message to existing conversation:', conversationId)
-        await addMessage(conversationId, userMessage)
-      }
-      
-      // Process with AI after message is stored
-      await processAIResponse(conversationId, userMessage)
-      
-    } catch (error) {
-      console.error('Error:', error)
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant' as const,
-        content: 'Sorry, I encountered an error processing your request.',
-      }
-      if (currentConversationId) {
-        await addMessage(currentConversationId, errorMessage)
-      }
-      else {
-        if (error instanceof Error) {
-          setError(error.message)
-        } else {
-          setError('An unknown error occurred.')
-        }
-      }
-    } finally {
-      setLoading(false)
-    }
-  }, [input, isLoading, createTitleFromInput, currentConversationId, createNewConversation, addMessage, processAIResponse, setLoading]);
-
-  const handleNewChat = useCallback(() => {
-    createNewConversation()
-  }, [createNewConversation]);
-
-  const handleDeleteChat = useCallback(async (id: string) => {
-    await deleteConversation(id)
-  }, [deleteConversation]);
-
-  const handleUpdateChatTitle = useCallback(async (id: string, title: string) => {
-    await updateConversationTitle(id, title)
-    setEditingChatId(null)
-    setEditingTitle('')
-  }, [updateConversationTitle]);
+  // Category colors for styling
+  const categoryColors: Record<string, { gradient: string; border: string; badge: string }> = useMemo(
+    () => ({
+      blue: {
+        gradient: 'from-blue-500/10 to-transparent',
+        border: 'border-blue-500/20',
+        badge: 'bg-blue-500/10 text-blue-400',
+      },
+      green: {
+        gradient: 'from-emerald-500/10 to-transparent',
+        border: 'border-emerald-500/20',
+        badge: 'bg-emerald-500/10 text-emerald-400',
+      },
+      purple: {
+        gradient: 'from-purple-500/10 to-transparent',
+        border: 'border-purple-500/20',
+        badge: 'bg-purple-500/10 text-purple-400',
+      },
+      amber: {
+        gradient: 'from-amber-500/10 to-transparent',
+        border: 'border-amber-500/20',
+        badge: 'bg-amber-500/10 text-amber-400',
+      },
+      cyan: {
+        gradient: 'from-cyan-500/10 to-transparent',
+        border: 'border-cyan-500/20',
+        badge: 'bg-cyan-500/10 text-cyan-400',
+      },
+      rose: {
+        gradient: 'from-rose-500/10 to-transparent',
+        border: 'border-rose-500/20',
+        badge: 'bg-rose-500/10 text-rose-400',
+      },
+    }),
+    [],
+  );
 
   return (
-    <div className="relative flex h-screen bg-gray-900">
-      {/* Settings Button */}
-      <div className="absolute z-50 top-5 right-5">
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className="flex items-center justify-center w-10 h-10 text-white transition-opacity rounded-full bg-gradient-to-r from-orange-500 to-red-600 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-orange-500"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      {/* Subtle background pattern */}
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-800/50 via-gray-900 to-gray-900 pointer-events-none" />
+
+      <div className="relative max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+        {/* Header */}
+        <ScenarioHeader values={values} onReset={handleReset} onPreset={handlePreset} />
+
+        {/* Main Content: Two-column layout on large screens */}
+        <div className="mt-6 grid lg:grid-cols-[1fr_380px] gap-6">
+          {/* Left: Indicator Categories */}
+          <div className="space-y-4">
+            {categories.map((cat) => {
+              const colors = categoryColors[cat.color] || categoryColors.blue;
+              const isExpanded = expandedCategory === cat.id;
+
+              return (
+                <div
+                  key={cat.id}
+                  className={`rounded-xl border ${colors.border} bg-gradient-to-br ${colors.gradient} overflow-hidden transition-all duration-300`}
+                >
+                  {/* Category Header */}
+                  <button
+                    onClick={() => toggleCategory(cat.id)}
+                    className="w-full flex items-center gap-3 p-4 text-left hover:bg-white/[0.02] transition-colors"
+                  >
+                    <span className="text-2xl">{cat.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <h2 className="text-base font-semibold text-gray-100">{cat.name}</h2>
+                      <p className="text-xs text-gray-500">{cat.description}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>
+                        {cat.indicators.length} indicators
+                      </span>
+                      <span
+                        className="text-gray-500 transition-transform duration-200"
+                        style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                      >
+                        ▼
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Indicators */}
+                  <div
+                    className={`transition-all duration-400 overflow-hidden ${
+                      isExpanded ? 'max-h-[3000px] opacity-100' : 'max-h-0 opacity-0'
+                    }`}
+                  >
+                    <div className="p-4 pt-0 grid gap-3 sm:grid-cols-1 md:grid-cols-2">
+                      {cat.indicators.map((ind) => (
+                        <IndicatorCard
+                          key={ind.id}
+                          indicator={ind}
+                          value={values[ind.id] ?? ind.currentValue}
+                          onChange={handleChange}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right: Impact Narrative (sticky on desktop) */}
+          <div className="lg:sticky lg:top-6 lg:self-start">
+            <ImpactNarrative values={values} />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <footer className="mt-12 mb-6 text-center">
+          <p className="text-xs text-gray-600">
+            This is an educational tool for exploring economic scenarios. Values and thresholds are based on
+            conditions set for evaluation by February 2029. Baseline values approximate February 2026 levels.
+          </p>
+        </footer>
       </div>
-
-      {/* Sidebar */}
-      <Sidebar 
-        conversations={conversations}
-        currentConversationId={currentConversationId}
-        handleNewChat={handleNewChat}
-        setCurrentConversationId={setCurrentConversationId}
-        handleDeleteChat={handleDeleteChat}
-        editingChatId={editingChatId}
-        setEditingChatId={setEditingChatId}
-        editingTitle={editingTitle}
-        setEditingTitle={setEditingTitle}
-        handleUpdateChatTitle={handleUpdateChatTitle}
-      />
-
-      {/* Main Content */}
-      <div className="flex flex-col flex-1">
-        <TopBanner />
-        {error && (
-          <p className="w-full max-w-3xl p-4 mx-auto font-bold text-orange-500">{error}</p>
-        )}
-        {currentConversationId ? (
-          <>
-            {/* Messages */}
-            <div
-              ref={messagesContainerRef}
-              className="flex-1 pb-24 overflow-y-auto messages-container"
-            >
-              <div className="w-full max-w-3xl px-4 mx-auto">
-                {[...messages, pendingMessage]
-                  .filter((message): message is Message => message !== null)
-                  .map((message) => (
-                    <ChatMessage
-                      key={message.id}
-                      message={message}
-                      isStreaming={message === pendingMessage && isLoading}
-                    />
-                  ))}
-                {isLoading && <LoadingIndicator />}
-              </div>
-            </div>
-
-            {/* Input */}
-            <ChatInput 
-              input={input}
-              setInput={setInput}
-              handleSubmit={handleSubmit}
-              isLoading={isLoading}
-            />
-          </>
-        ) : (
-          <WelcomeScreen 
-            input={input}
-            setInput={setInput}
-            handleSubmit={handleSubmit}
-            isLoading={isLoading}
-          />
-        )}
-      </div>
-
-      {/* Settings Dialog */}
-      <SettingsDialog
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-      />
     </div>
-  )
+  );
 }
 
 export const Route = createFileRoute('/')({
-  component: Home,
-})
+  component: ScenarioPage,
+  head: () => ({
+    meta: [
+      {
+        title: 'Economy 2029 — Interactive Scenario Explorer',
+      },
+    ],
+  }),
+});
