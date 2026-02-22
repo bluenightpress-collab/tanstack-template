@@ -1,7 +1,6 @@
-export { ChatMessage } from './ChatMessage';
-export { LoadingIndicator } from './LoadingIndicator';
-export { ChatInput } from './ChatInput';
-export { Sidebar } from './Sidebar';
-export { WelcomeScreen } from './WelcomeScreen';
-export { SettingsDialog } from './SettingsDialog';
-export { TopBanner } from './TopBanner'; 
+export { SentenceDiagram } from './SentenceDiagram'
+export { SentenceInput } from './SentenceInput'
+export { FeedbackPanel } from './FeedbackPanel'
+export { WritingChallenges } from './WritingChallenges'
+export { AchievementBadges } from './AchievementBadges'
+export { WelcomeScreen } from './WelcomeScreen'
